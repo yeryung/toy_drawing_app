@@ -7,21 +7,34 @@ import android.app.Dialog
 import android.app.Instrumentation
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.media.MediaScannerConnection
 import androidx.appcompat.app.AppCompatActivity
 import android.os.Bundle
 import android.provider.MediaStore
 import android.view.View
 import android.widget.*
+import androidx.lifecycle.lifecycleScope
 import androidx.activity.result.ActivityResult
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.get
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.FileOutputStream
 
 class MainActivity : AppCompatActivity() {
     private var drawingView:DrawingView? = null
     private var mImageButtonCurrentPaint: ImageButton? = null
+    var customProgressDialog : Dialog? = null
 
     val openGalleryLauncher:ActivityResultLauncher<Intent> = registerForActivityResult(ActivityResultContracts.StartActivityForResult()){result->
         //Todo 3: get the returned result from the lambda and check the resultcode and the data returned
@@ -95,6 +108,29 @@ class MainActivity : AppCompatActivity() {
         ibGallery.setOnClickListener {
             requestStoragePermission()
         }
+
+        val ibSave : ImageButton = findViewById(R.id.ib_save)
+        ibSave.setOnClickListener {
+            showProgressDialog()
+            //check if permission is allowed
+            if (isReadStorageAllowed()){
+                //launch a coroutine block
+                lifecycleScope.launch{
+                    //reference the frame layout
+                    val flDrawingView:FrameLayout = findViewById(R.id.fl_drawing_view_container)
+                    //Save the image to the device
+                    saveBitmapFile(getBitmapFromView(flDrawingView))
+                }
+            }
+        }
+    }
+
+    private fun isReadStorageAllowed(): Boolean {
+        val result = ContextCompat.checkSelfPermission(
+            this, Manifest.permission.READ_EXTERNAL_STORAGE
+        )
+
+        return result == PackageManager.PERMISSION_GRANTED
     }
 
     private fun showBrushSizeChooserDialog(){
@@ -181,4 +217,118 @@ class MainActivity : AppCompatActivity() {
         builder.create().show()
     }
 
+    private fun getBitmapFromView(view: View): Bitmap {
+        //Define a bitmap with the same size as the view.
+        // CreateBitmap : Returns a mutable bitmap with the specified width and height
+        val returnedBitmap = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
+        //Bind a canvas to it
+        val canvas = Canvas(returnedBitmap)
+        //Get the view's background
+        val bgDrawable = view.background
+        if (bgDrawable != null) {
+            //has background drawable, then draw it on the canvas
+            bgDrawable.draw(canvas)
+        } else {
+            //does not have background drawable, then draw white background on the canvas
+            canvas.drawColor(Color.WHITE)
+        }
+        // draw the view on the canvas
+        view.draw(canvas)
+        //return the bitmap
+        return returnedBitmap
+    }
+
+    // TODO(Step 2 : A method to save the image.)
+    private suspend fun saveBitmapFile(mBitmap: Bitmap?):String{
+        var result = ""
+        withContext(Dispatchers.IO) {
+            if (mBitmap != null) {
+                try {
+                    val bytes = ByteArrayOutputStream() // Creates a new byte array output stream.
+                    // The buffer capacity is initially 32 bytes, though its size increases if necessary.
+
+                    mBitmap.compress(Bitmap.CompressFormat.PNG, 90, bytes)
+
+                    val f = File(
+                        externalCacheDir?.absoluteFile.toString()
+                                + File.separator + "KidDrawingApp_" + System.currentTimeMillis() / 1000 + ".jpg"
+                    )
+                    // Here the Environment : Provides access to environment variables.
+                    // getExternalStorageDirectory : returns the primary shared/external storage directory.
+                    // absoluteFile : Returns the absolute form of this abstract pathname.
+                    // File.separator : The system-dependent default name-separator character. This string contains a single character.
+
+                    val fo = FileOutputStream(f) // Creates a file output stream to write to the file represented by the specified object.
+                    fo.write(bytes.toByteArray()) // Writes bytes from the specified byte array to this file output stream.
+                    fo.close() // Closes this file output stream and releases any system resources associated with this stream. This file output stream may no longer be used for writing bytes.
+                    result = f.absolutePath // The file absolute path is return as a result.
+                    //We switch from io to ui thread to show a toast
+                    runOnUiThread {
+                        cancelProgressDialog()
+                        if (!result.isEmpty()) {
+                            Toast.makeText(
+                                this@MainActivity,
+                                "File saved successfully :$result",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                            shareImage(result)
+                        } else {
+                            Toast.makeText(
+                                this@MainActivity,
+                                "Something went wrong while saving the file.",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    }
+                } catch (e: Exception) {
+                    result = ""
+                    e.printStackTrace()
+                }
+            }
+        }
+        return result
+    }
+
+    private fun showProgressDialog(){
+        customProgressDialog = Dialog(this@MainActivity)
+
+        customProgressDialog?.setContentView(R.layout.dialog_custom_progress)
+
+        customProgressDialog?.show()
+
+    }
+
+    private fun cancelProgressDialog(){
+        if(customProgressDialog != null){
+            customProgressDialog?.dismiss()
+            customProgressDialog = null
+        }
+    }
+
+    private fun shareImage(result: String){
+        MediaScannerConnection.scanFile(
+            this@MainActivity, arrayOf(result), null
+        ) { path, uri ->
+            // This is used for sharing the image after it has being stored in the storage.
+            val shareIntent = Intent()
+            shareIntent.action = Intent.ACTION_SEND
+            shareIntent.putExtra(
+                Intent.EXTRA_STREAM,
+                uri
+            ) // A content: URI holding a stream of data associated with the Intent, used to supply the data being sent.
+            shareIntent.type =
+                "image/png" // The MIME type of the data being handled by this intent.
+            startActivity(
+                Intent.createChooser(
+                    shareIntent,
+                    "Share"
+                )
+            )// Activity Action: Display an activity chooser,
+            // allowing the user to pick what they want to before proceeding.
+            // This can be used as an alternative to the standard activity picker
+            // that is displayed by the system when you try to start an activity with multiple possible matches,
+            // with these differences in behavior:
+        }
+        // END
+    }
 }
